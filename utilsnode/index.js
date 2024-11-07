@@ -1,9 +1,18 @@
 const fs = require('fs');
 const yaml = require('js-yaml');
 const path = require('path');
+const xml2js = require('xml2js');
 
-function splitPlaybooks(yamlFile, outputDir) {
+async function parseXml(xmlFile) {
+    const xmlData = fs.readFileSync(xmlFile, 'utf8');
+    const parser = new xml2js.Parser();
+    const result = await parser.parseStringPromise(xmlData);
+    const artefactNames = result.DeployConfig.Artefacts[0].Artefact.map(artefact => artefact.$.Name);
+    console.log(artefactNames);
+    return artefactNames;
+}
 
+async function splitPlaybooks(yamlFile, outputDir, artefactNames) {
     let data;
     try {
         data = yaml.load(fs.readFileSync(yamlFile, 'utf8'));
@@ -18,13 +27,21 @@ function splitPlaybooks(yamlFile, outputDir) {
         fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    // split each section identified by playbookId
-    data.forEach(playbook => {
+    data.playbooks.forEach(playbook => {
         const playbookId = playbook.playbookId;
-        const playbookData = playbook.playbookData;
+        let playbookData = playbook.playbookData;
 
         if (playbookId && playbookData) {
-            // # we make sure 'hosts' is the first tag
+            playbookData = playbookData.map(item => {
+                item.tasks.map(task => {
+                    if (task.unarchive && artefactNames.includes(task.unarchive.src)) {
+                        task.unarchive.src = '{{ artefactSource }}';
+                    }
+                    return task
+                })
+                return item;
+            });
+
             const sortedPlaybookData = playbookData.sort((a, b) => ('hosts' in b) - ('hosts' in a));
             console.log(sortedPlaybookData);
 
@@ -41,12 +58,19 @@ function splitPlaybooks(yamlFile, outputDir) {
     console.log("Process completed.");
 }
 
-if (process.argv.length !== 4) {
-    console.error('Usage: node index.js <input_playbook.yaml> <target_folder>');
+if (process.argv.length !== 5) {
+    console.error('Usage: node index.js <config.xml> <input_playbook.yaml> <target_folder>');
     process.exit(1);
 }
 
-const yamlFile = process.argv[2];
-const outputDir = process.argv[3];
+const xmlFile = process.argv[2];
+const yamlFile = process.argv[3];
+const outputDir = process.argv[4];
 
-splitPlaybooks(yamlFile, outputDir);
+parseXml(xmlFile)
+    .then(artefactNames => {
+        splitPlaybooks(yamlFile, outputDir, artefactNames);
+    })
+    .catch(e => {
+        console.error(`Error processing XML file: ${e}`);
+    });
