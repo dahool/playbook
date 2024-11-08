@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const xml2js = require('xml2js');
+const PropertiesReader = require('properties-reader');
 
 const inputDir = path.join(__dirname, 'input');
 const outputDir = path.join(__dirname, 'output');
@@ -9,18 +10,15 @@ const DEFAULTS = {
   'release_no': 'JENKINS'
 }
 
-// Function to read .properties files
+// Function to read .properties files using properties-reader
 function readProperties(filePath) {
-  const properties = {};
-  const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
-  console.log(`Reading file: ${filePath}`);
-  lines.forEach(line => {
-    const [key, value] = line.split('=');
-    if (key && value) {
-      properties[key.trim()] = value.trim();
-    }
+  const properties = PropertiesReader(filePath);
+  const result = {};
+  properties.each((key, value) => {
+    result[key] = value;
   });
-  return properties;
+  console.log(`Reading file: ${filePath}`);
+  return result;
 }
 
 function removeArHsbcValues(properties) {
@@ -86,7 +84,7 @@ for (const key in serverProperties) {
   }
 }
 
-defaultJson = {...DEFAULTS,...defaultJson}
+defaultJson = {...DEFAULTS, ...defaultJson};
 
 const envKeys = fs.readFileSync(path.join(inputDir, 'envs.txt'), 'utf-8').split('\n').filter(Boolean);
 console.log('envKeys:', envKeys);
@@ -136,11 +134,11 @@ readXml(path.join(inputDir, 'deploy_config.xml')).then(xmlData => {
           let vars = extractVariableValue(variableValue);
           vars.forEach(val => {
             if (variableName !== val && (envJson[val] || defaultJson[val])) {
-              defaultJson[variableName] = envJson[val] | defaultJson[val];
+              defaultJson[variableName] = envJson[val] || defaultJson[val];
             } else if (envJson[val] == null && defaultJson[val] == null) {
-              console.error(`WARN: ${val} is undefined`)
+              console.error(`WARN: ${val} is undefined`);
             }
-          })
+          });
         });
 
         // Save to JSON file in the output directory
