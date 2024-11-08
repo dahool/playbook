@@ -17,7 +17,6 @@ function readProperties(filePath) {
   return properties;
 }
 
-// remove values ending with '.ar.hsbc'
 function removeArHsbcValues(properties) {
   const modifiedProperties = {};
   for (const key in properties) {
@@ -51,18 +50,20 @@ if (!fs.existsSync(outputDir)) {
   fs.mkdirSync(outputDir);
 }
 
-// Create a default.json file with all keys starting with 'default.'
+// Create a default.json
 const defaultJson = {};
 for (const key in appProperties) {
+  if (key.endsWith('envGroupList')) continue;
   if (key.startsWith('default.')) {
-    defaultJson[key] = appProperties[key];
+    defaultJson[[key.replace('default.', '')]] = appProperties[key];
   }
 }
 for (const key in serverProperties) {
   if (key.startsWith('default.')) {
-    defaultJson[key] = serverProperties[key];
+    defaultJson[key.replace('default.', '')] = serverProperties[key];
   }
 }
+
 fs.writeFileSync(path.join(outputDir, 'default.json'), JSON.stringify(defaultJson, null, 2));
 console.log('File default.json saved');
 
