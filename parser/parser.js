@@ -1,9 +1,15 @@
 const fs = require('fs');
 const path = require('path');
+const xml2js = require('xml2js');
 
 const inputDir = path.join(__dirname, 'input');
 const outputDir = path.join(__dirname, 'output');
 
+const DEFAULTS = {
+  'release_no': 'JENKINS'
+}
+
+// Function to read .properties files
 function readProperties(filePath) {
   const properties = {};
   const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
@@ -34,7 +40,23 @@ function getMiddleGroup(str) {
   return parts.length === 3 ? parts[1] : null;
 }
 
-// Read .properties files from input directory
+function extractVariableValue(str) {
+  const regex = /\${(.*?)}/g;
+  let match;
+  const results = [];
+  while ((match = regex.exec(str)) !== null) {
+    results.push(match[1].split('.').pop());
+  }
+  return results;
+}
+
+async function readXml(filePath) {
+  const xmlData = fs.readFileSync(filePath, 'utf-8');
+  const parser = new xml2js.Parser();
+  const result = await parser.parseStringPromise(xmlData);
+  return result;
+}
+
 const appProperties = readProperties(path.join(inputDir, 'application.properties'));
 console.log('appProperties:', appProperties);
 
@@ -51,11 +73,11 @@ if (!fs.existsSync(outputDir)) {
 }
 
 // Create a default.json
-const defaultJson = {};
+let defaultJson = {};
 for (const key in appProperties) {
   if (key.endsWith('envGroupList')) continue;
   if (key.startsWith('default.')) {
-    defaultJson[[key.replace('default.', '')]] = appProperties[key];
+    defaultJson[key.replace('default.', '')] = appProperties[key];
   }
 }
 for (const key in serverProperties) {
@@ -64,55 +86,75 @@ for (const key in serverProperties) {
   }
 }
 
-fs.writeFileSync(path.join(outputDir, 'default.json'), JSON.stringify(defaultJson, null, 2));
-console.log('File default.json saved');
+defaultJson = {...DEFAULTS,...defaultJson}
 
 const envKeys = fs.readFileSync(path.join(inputDir, 'envs.txt'), 'utf-8').split('\n').filter(Boolean);
 console.log('envKeys:', envKeys);
 
-envKeys.forEach(KEY => {
-  console.log(`Processing KEY: ${KEY}`);
-  // Look for envGroupList in application.properties
-  const envGroupListKey = `${KEY}.envGroupList`;
-  let envGroupList = appProperties[envGroupListKey];
-  if (!envGroupList) {
-    envGroupList = appProperties['default.envGroupList'];
-  }
+// Process deploy_config.xml
+readXml(path.join(inputDir, 'deploy_config.xml')).then(xmlData => {
+  const deployConfigVars = xmlData.DeployConfig.DeployTasks[0].Repeat[0].AnsiblePlaybookTask.flatMap(task => 
+    task.Variables[0].Variable.map(variable => ({
+      variableName: variable.variableName[0],
+      variableValue: variable.variableValue[0]
+    }))
+  );
 
-  if (envGroupList) {
-    envGroupList = envGroupList.split(',');
-    console.log(`envGroupList for ${KEY}:`, envGroupList);
+  envKeys.forEach(KEY => {
+    console.log(`Processing KEY: ${KEY}`);
+    // Look for envGroupList in application.properties
+    const envGroupListKey = `${KEY}.envGroupList`;
+    let envGroupList = appProperties[envGroupListKey];
+    if (!envGroupList) {
+      envGroupList = appProperties['default.envGroupList'];
+    }
 
-    envGroupList.forEach(ENV => {
-      const envJson = {};
+    if (envGroupList) {
+      envGroupList = envGroupList.split(',');
+      console.log(`envGroupList for ${KEY}:`, envGroupList);
 
-      // Look for properties starting with KEY.ENV. in application.properties
-      for (const key in appProperties) {
-        if (key.endsWith('envGroupList')) continue;
-        if (key.startsWith(`${KEY}.`)) {
-          const newKey = key.replace(`${KEY}.`, '');
-          envJson[newKey] = appProperties[key];
+      envGroupList.forEach(ENV => {
+        const envJson = {};
+
+        for (const key in appProperties) {
+          if (key.endsWith('envGroupList')) continue;
+          if (key.startsWith(`${KEY}.`)) {
+            envJson[key.replace(`${KEY}.`, '')] = appProperties[key];
+          }
         }
-      }
 
-      // Look for properties starting with KEY. but not having ENV in application.properties
-      for (const key in serverProperties) {
-        if (key.startsWith(`${KEY}.${ENV}.`)) {
-          const newKey = key.replace(`${KEY}.${ENV}.`, '');
-          envJson[newKey] = serverProperties[key];
-        } else if (key.startsWith(`${KEY}.`) && !key.includes(`.${ENV}.`) && !envGroupList.includes(getMiddleGroup(key))) {
-          const newKey = key.replace(`${KEY}.`, '');
-          envJson[newKey] = serverProperties[key];
+        for (const key in serverProperties) {
+          if (key.startsWith(`${KEY}.${ENV}.`)) {
+            envJson[key.replace(`${KEY}.${ENV}.`, '')] = serverProperties[key];
+          } else if (key.startsWith(`${KEY}.`) && !key.includes(`.${ENV}.`) && !envGroupList.includes(getMiddleGroup(key))) {
+            envJson[key.replace(`${KEY}.`, '')] = serverProperties[key];
+          }
         }
-      }
 
-      // Save to JSON file in the output directory
-      const outputFilePath = path.join(outputDir, `${KEY}.${ENV}.json`);
-      fs.writeFileSync(outputFilePath, JSON.stringify(envJson, null, 2));
-      console.log(`File saved: ${outputFilePath}`);
-    });
-  }
+        // Process deployConfigVars
+        deployConfigVars.forEach(({ variableName, variableValue }) => {
+          let vars = extractVariableValue(variableValue);
+          vars.forEach(val => {
+            if (variableName !== val && (envJson[val] || defaultJson[val])) {
+              defaultJson[variableName] = envJson[val] | defaultJson[val];
+            } else if (envJson[val] == null && defaultJson[val] == null) {
+              console.error(`WARN: ${val} is undefined`)
+            }
+          })
+        });
+
+        // Save to JSON file in the output directory
+        const outputFilePath = path.join(outputDir, `${KEY}.${ENV}.json`);
+        fs.writeFileSync(outputFilePath, JSON.stringify(envJson, null, 2));
+        console.log(`File saved: ${outputFilePath}`);
+      });
+    }
+  });
+})
+.then(() => {
+  fs.writeFileSync(path.join(outputDir, 'default.json'), JSON.stringify(defaultJson, null, 2));
+  console.log('File default.json saved');
+})
+.catch(err => {
+  console.error('Error reading deploy_config.xml:', err);
 });
-
-
-
